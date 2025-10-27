@@ -75,7 +75,7 @@ def extract_referenced_issues_from_text(text):
 # Resolve issue reference (handles cross-repo issues too)
 # ----------------------------------------------------------------------------------------
 def resolve_issue_reference(reference):
-    """Return issue ID, number, and URL for a given reference."""
+    """Return issue ID, number, URL, and state for a given reference."""
     match = re.match(r"(?:(?P<org>[\w\-]+)/(?P<repo>[\w\-]+))?#(?P<number>\d+)", reference)
     if not match:
         return None
@@ -209,9 +209,6 @@ def get_qatesting_status_option_id(project_id, status_field_name):
 # Fetch Project Items 
 # ----------------------------------------------------------------------------------------
 def get_project_items(owner, owner_type, project_number, status_field_name):
-    """
-    Fetch all items from the project board to map issues to their ProjectV2 item IDs.
-    """
     query = """
     query($owner: String!, $projectNumber: Int!, $afterCursor: String) {
       organization(login: $owner) {
@@ -239,7 +236,6 @@ def get_project_items(owner, owner_type, project_number, status_field_name):
     """
     variables = {"owner": owner, "projectNumber": project_number, "afterCursor": None}
     items = []
-
     try:
         while True:
             response = requests.post(
@@ -248,11 +244,9 @@ def get_project_items(owner, owner_type, project_number, status_field_name):
                 headers={"Authorization": f"Bearer {config.gh_token}"},
             )
             data = response.json()
-
             if "errors" in data:
                 logging.error(f"GraphQL query errors: {data['errors']}")
                 break
-
             nodes = (
                 data.get("data", {})
                 .get("organization", {})
@@ -261,7 +255,6 @@ def get_project_items(owner, owner_type, project_number, status_field_name):
                 .get("nodes", [])
             )
             items.extend(nodes)
-
             page_info = (
                 data.get("data", {})
                 .get("organization", {})
@@ -269,11 +262,9 @@ def get_project_items(owner, owner_type, project_number, status_field_name):
                 .get("items", {})
                 .get("pageInfo", {})
             )
-
             if not page_info.get("hasNextPage"):
                 break
             variables["afterCursor"] = page_info.get("endCursor")
-
         return items
     except requests.RequestException as e:
         logging.error(f"Request error while fetching project items: {e}")
@@ -422,10 +413,4 @@ def get_issue_state(issue_data):
     response = requests.post(
         config.api_endpoint,
         json={"query": query, "variables": variables},
-        headers={"Authorization": f"Bearer {config.gh_token}"},
-    )
-    data = response.json()
-    try:
-        return data["data"]["node"]["state"]
-    except Exception:
-        return None
+        headers={"Authorization": f"Bearer
