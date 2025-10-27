@@ -92,6 +92,7 @@ def resolve_issue_reference(reference):
           number
           title
           url
+          state
         }
       }
     }
@@ -399,3 +400,32 @@ def add_issue_comment(issue_id, body: str):
         headers={"Authorization": f"Bearer {config.gh_token}"},
     )
     return response.json().get("data")
+
+
+# ----------------------------------------------------------------------------------------
+# NEW: Check issue state (OPEN or CLOSED)
+# ----------------------------------------------------------------------------------------
+def get_issue_state(issue_data):
+    """
+    Return the state of an issue ('OPEN' or 'CLOSED') using its node ID.
+    """
+    query = """
+    query($id: ID!) {
+      node(id: $id) {
+        ... on Issue {
+          state
+        }
+      }
+    }
+    """
+    variables = {"id": issue_data["id"]}
+    response = requests.post(
+        config.api_endpoint,
+        json={"query": query, "variables": variables},
+        headers={"Authorization": f"Bearer {config.gh_token}"},
+    )
+    data = response.json()
+    try:
+        return data["data"]["node"]["state"]
+    except Exception:
+        return None
