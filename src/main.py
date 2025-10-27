@@ -89,9 +89,11 @@ def notify_change_status():
             issue_id = issue_data["id"]
             issue_number = issue_data["number"]
 
-            # NEW: Check issue state before proceeding
-            issue_state = graphql.get_issue_state(issue_data)
-            if issue_state != "OPEN":
+            # ✅ Use the state from the resolved issue or fetch it if missing
+            issue_state = issue_data.get("state") or graphql.get_issue_state(issue_data)
+
+            # ✅ Skip closed issues (case-insensitive)
+            if issue_state and issue_state.upper() != "OPEN":
                 logger.info(f"Skipping issue #{issue_number} because it is {issue_state}.")
                 continue
 
@@ -115,6 +117,11 @@ def notify_change_status():
                     if item.get("content") and item["content"].get("id") == issue_id:
                         item_id = item["id"]
                         item_found = True
+
+                        # 🚫 Extra safeguard: prevent any update if issue is not open
+                        if issue_state and issue_state.upper() != "OPEN":
+                            logger.warning(f"Blocked status update for closed issue #{issue_number}.")
+                            continue
 
                         update_result = graphql.update_issue_status_to_qa_testing(
                             owner=config.repository_owner,
