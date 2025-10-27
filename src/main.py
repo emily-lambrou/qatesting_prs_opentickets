@@ -89,6 +89,12 @@ def notify_change_status():
             issue_id = issue_data["id"]
             issue_number = issue_data["number"]
 
+            # NEW: Check issue state before proceeding
+            issue_state = graphql.get_issue_state(issue_data)
+            if issue_state != "OPEN":
+                logger.info(f"Skipping issue #{issue_number} because it is {issue_state}.")
+                continue
+
             comment_text = (
                 f"Testing will be available in 15 minutes "
                 f"(triggered by [PR #{pr_number}]({pr_url}))"
