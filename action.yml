@@ -1,0 +1,35 @@
+name: "Update issue status to QA Testing when a pull request is merged in dev"
+description: "Notify when a pull request is merged by changing the status to QA Testing and adding a comment"
+author: "Emily Lambrou"
+branding:
+  icon: 'notification'
+  color: 'green'
+runs:
+  using: "docker"
+  image: "Dockerfile"
+inputs:
+  gh_token:
+    description: "GitHub Personal Access Token"
+    required: true
+  project_number:
+    description: "The Project Number"
+    required: true 
+  project_title:
+    description: "The Project Title"
+    required: true
+  status_field_name:
+    description: "The field name of the status"
+    required: true
+    default: 'Status'
+  enterprise_github:
+    description: "Determines if the GitHub is the enterprise ot not (True,False)"
+    required: false
+    default: 'False'
+  repository_owner_type:
+    description: "The type of the repository owner (organization, user)"
+    required: true
+    default: 'user'
+  dry_run:
+    description: "DryRun Mode (True, False)"
+    required: false
+    default: 'False'
