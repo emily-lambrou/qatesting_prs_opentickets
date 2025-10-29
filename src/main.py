@@ -1,6 +1,7 @@
 from logger import logger
 import config
 import graphql
+import time
 
 
 def check_comment_exists(issue_id, comment_text):
@@ -47,6 +48,8 @@ def notify_change_status():
             continue
 
         for issue_ref in linked_issues:
+            time.sleep(0.3)
+
             issue_data = graphql.resolve_issue_reference(issue_ref)
             if not issue_data:
                 continue
@@ -54,10 +57,10 @@ def notify_change_status():
             issue_id = issue_data["id"]
             issue_number = issue_data["number"]
 
-            # ✅ Lightweight live state check
+            # 🚨 SAFETY CHECK: ensure issue is truly open
             issue_state = graphql.get_issue_state(config.repository_owner, config.repository_name, issue_number)
             if issue_state != "OPEN":
-                logger.info(f"Skipping issue #{issue_number} — it is CLOSED.")
+                logger.info(f"Skipping issue #{issue_number} — state={issue_state}.")
                 continue
 
             comment_text = f"Testing will be available in 15 minutes (triggered by [PR #{pr_number}]({pr_url}))"
@@ -85,6 +88,8 @@ def notify_change_status():
             else:
                 logger.info(f"Issue #{issue_number} already in QA Testing — adding comment.")
                 graphql.add_issue_comment(issue_id, comment_text)
+
+            time.sleep(0.3)
 
 
 def main():
