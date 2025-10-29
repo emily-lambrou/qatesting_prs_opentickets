@@ -56,6 +56,21 @@ def notify_change_status():
         logging.error(f"'QA Testing' option not found in project {project_title}")
         return None
 
+    # ----------------------------------------------------------------------------------------
+    # Fetch all open issues from the project once
+    # ----------------------------------------------------------------------------------------
+    open_issues = graphql.get_open_project_issues(
+        owner=config.repository_owner,
+        project_number=config.project_number
+    )
+    open_issue_ids = {issue["id"] for issue in open_issues}
+    open_issue_numbers = {issue["number"] for issue in open_issues}
+
+    logger.info(f"Fetched {len(open_issues)} open issues from project '{project_title}'.")
+
+    # ----------------------------------------------------------------------------------------
+    # Fetch project items to map issues -> project items
+    # ----------------------------------------------------------------------------------------
     items = graphql.get_project_items(
         owner=config.repository_owner,
         owner_type=config.repository_owner_type,
@@ -89,12 +104,9 @@ def notify_change_status():
             issue_id = issue_data["id"]
             issue_number = issue_data["number"]
 
-            # ✅ Use the state from the resolved issue or fetch it if missing
-            issue_state = issue_data.get("state") or graphql.get_issue_state(issue_data)
-
-            # ✅ Skip closed issues (case-insensitive)
-            if issue_state and issue_state.upper() != "OPEN":
-                logger.info(f"Skipping issue #{issue_number} because it is {issue_state}.")
+            # ✅ Skip if issue is not open
+            if issue_id not in open_issue_ids and issue_number not in open_issue_numbers:
+                logger.info(f"Skipping issue #{issue_number} because it is CLOSED.")
                 continue
 
             comment_text = (
@@ -117,11 +129,6 @@ def notify_change_status():
                     if item.get("content") and item["content"].get("id") == issue_id:
                         item_id = item["id"]
                         item_found = True
-
-                        # 🚫 Extra safeguard: prevent any update if issue is not open
-                        if issue_state and issue_state.upper() != "OPEN":
-                            logger.warning(f"Blocked status update for closed issue #{issue_number}.")
-                            continue
 
                         update_result = graphql.update_issue_status_to_qa_testing(
                             owner=config.repository_owner,
