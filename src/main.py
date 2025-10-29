@@ -25,9 +25,6 @@ def notify_change_status():
         logger.info("No merged PRs found in dev.")
         return
 
-    # ----------------------------------------------------------------------------------------
-    # Get the project_id, status_field_id, and QA Testing option ID
-    # ----------------------------------------------------------------------------------------
     project_title = config.project_title
     project_id = graphql.get_project_id_by_title(
         owner=config.repository_owner,
@@ -42,7 +39,6 @@ def notify_change_status():
         project_id=project_id,
         status_field_name=config.status_field_name
     )
-
     if not status_field_id:
         logging.error(f"Status field not found in project {project_title}")
         return None
@@ -51,12 +47,11 @@ def notify_change_status():
         project_id=project_id,
         status_field_name=config.status_field_name
     )
-
     if not status_option_id:
         logging.error(f"'QA Testing' option not found in project {project_title}")
         return None
 
-    # Fetch only OPEN project items for efficiency
+    # Fetch all open project items
     items = graphql.get_open_project_issues(
         owner=config.repository_owner,
         owner_type=config.repository_owner_type,
@@ -64,9 +59,6 @@ def notify_change_status():
         status_field_name=config.status_field_name
     )
 
-    # ----------------------------------------------------------------------------------------
-    # Iterate over merged PRs and update linked issues
-    # ----------------------------------------------------------------------------------------
     for pr in merged_prs:
         pr_number = pr["number"]
         pr_url = pr["url"]
@@ -87,9 +79,10 @@ def notify_change_status():
                 logger.warning(f"Could not resolve issue reference '{issue_ref}'.")
                 continue
 
-            # 🧩 Skip closed issues entirely
-            if issue_data.get("state") != "OPEN":
-                logger.info(f"Skipping issue #{issue_data['number']} because it is CLOSED.")
+            # 🧩 Verify the issue is OPEN before proceeding
+            issue_state = issue_data.get("state", "")
+            if issue_state != "OPEN":
+                logger.info(f"Skipping issue #{issue_data.get('number')} because it is CLOSED.")
                 continue
 
             issue_id = issue_data["id"]
@@ -110,6 +103,7 @@ def notify_change_status():
             if current_status != "QA Testing":
                 logger.info(f"Updating issue #{issue_number} to QA Testing (triggered by PR #{pr_number}).")
 
+                # Find the project item for this issue
                 item_found = False
                 for item in items:
                     if item.get("content") and item["content"].get("id") == issue_id:
