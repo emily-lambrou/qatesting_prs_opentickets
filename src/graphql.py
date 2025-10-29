@@ -50,23 +50,11 @@ def get_recent_merged_prs_in_dev(owner, repo):
                 logging.error(f"GraphQL query errors: {data['errors']}")
                 break
 
-            nodes = (
-                data.get("data", {})
-                .get("repository", {})
-                .get("pullRequests", {})
-                .get("nodes", [])
-            )
+            nodes = data.get("data", {}).get("repository", {}).get("pullRequests", {}).get("nodes", [])
             prs.extend(nodes)
-
-            page_info = (
-                data.get("data", {})
-                .get("repository", {})
-                .get("pullRequests", {})
-                .get("pageInfo", {})
-            )
-            if not page_info.get("hasNextPage"):
+            if not data["data"]["repository"]["pullRequests"]["pageInfo"]["hasNextPage"]:
                 break
-            variables["afterCursor"] = page_info.get("endCursor")
+            variables["afterCursor"] = data["data"]["repository"]["pullRequests"]["pageInfo"]["endCursor"]
 
         return prs
     except requests.RequestException as e:
@@ -84,10 +72,10 @@ def extract_referenced_issues_from_text(text):
 
 
 # ----------------------------------------------------------------------------------------
-# Resolve issue reference (handles cross-repo issues too)
+# Resolve issue reference (with open/closed state info)
 # ----------------------------------------------------------------------------------------
 def resolve_issue_reference(reference):
-    """Return issue ID, number, title, and URL for a given reference."""
+    """Return issue ID, number, title, URL, and state for a given reference."""
     match = re.match(r"(?:(?P<org>[\w\-]+)/(?P<repo>[\w\-]+))?#(?P<number>\d+)", reference)
     if not match:
         return None
@@ -121,87 +109,7 @@ def resolve_issue_reference(reference):
 
 
 # ----------------------------------------------------------------------------------------
-# Fetch OPEN issues from the project
-# ----------------------------------------------------------------------------------------
-def get_open_project_issues(owner, project_number):
-    """
-    Fetch all OPEN issues from a given project (ProjectV2).
-    """
-    query = """
-    query($owner: String!, $projectNumber: Int!, $afterCursor: String) {
-      organization(login: $owner) {
-        projectV2(number: $projectNumber) {
-          items(first: 100, after: $afterCursor) {
-            nodes {
-              content {
-                ... on Issue {
-                  id
-                  number
-                  state
-                }
-              }
-            }
-            pageInfo {
-              hasNextPage
-              endCursor
-            }
-          }
-        }
-      }
-    }
-    """
-    variables = {"owner": owner, "projectNumber": project_number, "afterCursor": None}
-    open_issues = []
-
-    try:
-        while True:
-            response = requests.post(
-                config.api_endpoint,
-                json={"query": query, "variables": variables},
-                headers={"Authorization": f"Bearer {config.gh_token}"},
-            )
-            data = response.json()
-
-            if "errors" in data:
-                logging.error(f"GraphQL query errors: {data['errors']}")
-                break
-
-            nodes = (
-                data.get("data", {})
-                .get("organization", {})
-                .get("projectV2", {})
-                .get("items", {})
-                .get("nodes", [])
-            )
-
-            for node in nodes:
-                issue = node.get("content")
-                if issue and issue.get("state") == "OPEN":
-                    open_issues.append({
-                        "id": issue["id"],
-                        "number": issue["number"]
-                    })
-
-            page_info = (
-                data.get("data", {})
-                .get("organization", {})
-                .get("projectV2", {})
-                .get("items", {})
-                .get("pageInfo", {})
-            )
-
-            if not page_info.get("hasNextPage"):
-                break
-            variables["afterCursor"] = page_info.get("endCursor")
-
-        return open_issues
-    except requests.RequestException as e:
-        logging.error(f"Request error while fetching open project issues: {e}")
-        return []
-
-
-# ----------------------------------------------------------------------------------------
-# Project and Status Handling
+# Get project, status, and QA Testing IDs
 # ----------------------------------------------------------------------------------------
 def get_project_id_by_title(owner, project_title):
     query = """
@@ -255,7 +163,6 @@ def get_status_field_id(project_id, status_field_name):
     for field in fields:
         if field.get("__typename") == "ProjectV2SingleSelectField" and field.get("name") == status_field_name:
             return field["id"]
-    logging.error(f"Status field '{status_field_name}' not found among project fields.")
     return None
 
 
@@ -293,16 +200,15 @@ def get_qatesting_status_option_id(project_id, status_field_name):
             for option in field.get("options", []):
                 if option.get("name") == "QA Testing":
                     return option["id"]
-    logging.error(f"'QA Testing' option not found under field '{status_field_name}'.")
     return None
 
 
 # ----------------------------------------------------------------------------------------
-# Fetch Project Items 
+# Fetch ONLY OPEN project issues
 # ----------------------------------------------------------------------------------------
-def get_project_items(owner, owner_type, project_number, status_field_name):
+def get_open_project_issues(owner, owner_type, project_number, status_field_name):
     """
-    Fetch all items from the project board to map issues to their ProjectV2 item IDs.
+    Fetch only issues that are OPEN in the project board.
     """
     query = """
     query($owner: String!, $projectNumber: Int!, $afterCursor: String) {
@@ -317,6 +223,7 @@ def get_project_items(owner, owner_type, project_number, status_field_name):
                   number
                   title
                   url
+                  state
                 }
               }
             }
@@ -329,9 +236,9 @@ def get_project_items(owner, owner_type, project_number, status_field_name):
       }
     }
     """
+
     variables = {"owner": owner, "projectNumber": project_number, "afterCursor": None}
     items = []
-
     try:
         while True:
             response = requests.post(
@@ -340,11 +247,6 @@ def get_project_items(owner, owner_type, project_number, status_field_name):
                 headers={"Authorization": f"Bearer {config.gh_token}"},
             )
             data = response.json()
-
-            if "errors" in data:
-                logging.error(f"GraphQL query errors: {data['errors']}")
-                break
-
             nodes = (
                 data.get("data", {})
                 .get("organization", {})
@@ -352,7 +254,10 @@ def get_project_items(owner, owner_type, project_number, status_field_name):
                 .get("items", {})
                 .get("nodes", [])
             )
-            items.extend(nodes)
+            # Filter only open issues
+            for node in nodes:
+                if node.get("content") and node["content"].get("state") == "OPEN":
+                    items.append(node)
 
             page_info = (
                 data.get("data", {})
@@ -373,7 +278,7 @@ def get_project_items(owner, owner_type, project_number, status_field_name):
 
 
 # ----------------------------------------------------------------------------------------
-# Issue utilities
+# Status update + comments
 # ----------------------------------------------------------------------------------------
 def get_issue_status(issue_id, status_field_name):
     query = """
