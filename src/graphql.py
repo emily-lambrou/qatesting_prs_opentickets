@@ -63,7 +63,7 @@ def get_recent_merged_prs_in_dev(owner, repo):
 
 
 # ----------------------------------------------------------------------------------------
-# Extract referenced issues (#123 or repo#456 or org/repo#789) from PR description
+# Extract referenced issues (#123 or repo#456 or org/repo#789)
 # ----------------------------------------------------------------------------------------
 def extract_referenced_issues_from_text(text):
     """Extracts issue references like #123 or repo#456 or org/repo#789."""
@@ -108,7 +108,68 @@ def resolve_issue_reference(reference):
 
 
 # ----------------------------------------------------------------------------------------
-# Project and Status Handling
+# Get issue state (OPEN or CLOSED)
+# ----------------------------------------------------------------------------------------
+def get_issue_state(issue_id, org=None, repo=None, issue_number=None):
+    """
+    Returns the current state of the issue: OPEN or CLOSED.
+    Uses fallback query if node(id:) fails.
+    """
+    # --- Primary query by node(id) ---
+    query_node = """
+    query($issueId: ID!) {
+      node(id: $issueId) {
+        __typename
+        ... on Issue {
+          state
+        }
+      }
+    }
+    """
+    try:
+        response = requests.post(
+            config.api_endpoint,
+            json={"query": query_node, "variables": {"issueId": issue_id}},
+            headers={"Authorization": f"Bearer {config.gh_token}"},
+        )
+        data = response.json()
+        issue_node = data.get("data", {}).get("node", {})
+
+        if issue_node and issue_node.get("__typename") == "Issue" and issue_node.get("state"):
+            return issue_node["state"]
+
+        # --- Fallback query using repo/owner if available ---
+        if org and repo and issue_number:
+            fallback_query = """
+            query($owner: String!, $repo: String!, $number: Int!) {
+              repository(owner: $owner, name: $repo) {
+                issue(number: $number) {
+                  state
+                }
+              }
+            }
+            """
+            variables = {"owner": org, "repo": repo, "number": issue_number}
+            fallback_resp = requests.post(
+                config.api_endpoint,
+                json={"query": fallback_query, "variables": variables},
+                headers={"Authorization": f"Bearer {config.gh_token}"},
+            )
+            fb_data = fallback_resp.json()
+            issue_data = fb_data.get("data", {}).get("repository", {}).get("issue", {})
+            if issue_data and issue_data.get("state"):
+                return issue_data["state"]
+
+        logging.error(f"Issue state not found for ID {issue_id}. Response: {data}")
+        return None
+
+    except Exception as e:
+        logging.error(f"Error fetching issue state for {issue_id}: {e}")
+        return None
+
+
+# ----------------------------------------------------------------------------------------
+# Project and status helpers (unchanged)
 # ----------------------------------------------------------------------------------------
 def get_project_id_by_title(owner, project_title):
     query = """
@@ -205,82 +266,7 @@ def get_qatesting_status_option_id(project_id, status_field_name):
 
 
 # ----------------------------------------------------------------------------------------
-# Fetch Project Items 
-# ----------------------------------------------------------------------------------------
-def get_project_items(owner, owner_type, project_number, status_field_name):
-    """
-    Fetch all items from the project board to map issues to their ProjectV2 item IDs.
-    """
-    query = """
-    query($owner: String!, $projectNumber: Int!, $afterCursor: String) {
-      organization(login: $owner) {
-        projectV2(number: $projectNumber) {
-          items(first: 100, after: $afterCursor) {
-            nodes {
-              id
-              content {
-                ... on Issue {
-                  id
-                  number
-                  title
-                  url
-                }
-              }
-            }
-            pageInfo {
-              hasNextPage
-              endCursor
-            }
-          }
-        }
-      }
-    }
-    """
-    variables = {"owner": owner, "projectNumber": project_number, "afterCursor": None}
-    items = []
-
-    try:
-        while True:
-            response = requests.post(
-                config.api_endpoint,
-                json={"query": query, "variables": variables},
-                headers={"Authorization": f"Bearer {config.gh_token}"},
-            )
-            data = response.json()
-
-            if "errors" in data:
-                logging.error(f"GraphQL query errors: {data['errors']}")
-                break
-
-            nodes = (
-                data.get("data", {})
-                .get("organization", {})
-                .get("projectV2", {})
-                .get("items", {})
-                .get("nodes", [])
-            )
-            items.extend(nodes)
-
-            page_info = (
-                data.get("data", {})
-                .get("organization", {})
-                .get("projectV2", {})
-                .get("items", {})
-                .get("pageInfo", {})
-            )
-
-            if not page_info.get("hasNextPage"):
-                break
-            variables["afterCursor"] = page_info.get("endCursor")
-
-        return items
-    except requests.RequestException as e:
-        logging.error(f"Request error while fetching project items: {e}")
-        return []
-
-
-# ----------------------------------------------------------------------------------------
-# Issue utilities
+# Other utilities (unchanged)
 # ----------------------------------------------------------------------------------------
 def get_issue_status(issue_id, status_field_name):
     query = """
@@ -315,45 +301,6 @@ def get_issue_status(issue_id, status_field_name):
                 return field.get("name")
         return None
     except Exception:
-        return None
-
-
-# Check if issue is OPEN or CLOSED (correct GraphQL schema)
-def get_issue_state(issue_id):
-    """
-    Returns the current state of the issue: OPEN or CLOSED.
-    """
-    query = """
-    query($issueId: ID!) {
-      node(id: $issueId) {
-        __typename
-        ... on Issue {
-          state
-        }
-      }
-    }
-    """
-    try:
-        response = requests.post(
-            config.api_endpoint,
-            json={"query": query, "variables": {"issueId": issue_id}},
-            headers={"Authorization": f"Bearer {config.gh_token}"},
-        )
-        data = response.json()
-
-        if "errors" in data:
-            logging.error(f"GraphQL errors while checking issue state: {data['errors']}")
-            return None
-
-        issue_node = data.get("data", {}).get("node", {})
-        if issue_node and issue_node.get("__typename") == "Issue":
-            return issue_node.get("state", None)
-
-        logging.error(f"Issue node not found or invalid for ID {issue_id}: {issue_node}")
-        return None
-
-    except Exception as e:
-        logging.error(f"Error fetching issue state for {issue_id}: {e}")
         return None
 
 
