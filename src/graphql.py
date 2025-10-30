@@ -2,7 +2,6 @@ import logging
 import requests
 import re
 import config
-import time
 
 logging.basicConfig(level=logging.DEBUG)
 
@@ -109,7 +108,7 @@ def resolve_issue_reference(reference):
 
 
 # ----------------------------------------------------------------------------------------
-# Get Project and Field IDs
+# Project and Status Handling
 # ----------------------------------------------------------------------------------------
 def get_project_id_by_title(owner, project_title):
     query = """
@@ -142,6 +141,7 @@ def get_status_field_id(project_id, status_field_name):
         ... on ProjectV2 {
           fields(first: 100) {
             nodes {
+              __typename
               ... on ProjectV2SingleSelectField {
                 id
                 name
@@ -160,9 +160,9 @@ def get_status_field_id(project_id, status_field_name):
     data = response.json()
     fields = data.get("data", {}).get("node", {}).get("fields", {}).get("nodes", [])
     for field in fields:
-        if field.get("name") == status_field_name:
+        if field.get("__typename") == "ProjectV2SingleSelectField" and field.get("name") == status_field_name:
             return field["id"]
-    logging.error(f"Status field '{status_field_name}' not found.")
+    logging.error(f"Status field '{status_field_name}' not found among project fields.")
     return None
 
 
@@ -173,6 +173,7 @@ def get_qatesting_status_option_id(project_id, status_field_name):
         ... on ProjectV2 {
           fields(first: 100) {
             nodes {
+              __typename
               ... on ProjectV2SingleSelectField {
                 id
                 name
@@ -195,65 +196,91 @@ def get_qatesting_status_option_id(project_id, status_field_name):
     data = response.json()
     fields = data.get("data", {}).get("node", {}).get("fields", {}).get("nodes", [])
     for field in fields:
-        if field.get("name") == status_field_name:
+        if field.get("__typename") == "ProjectV2SingleSelectField" and field.get("name") == status_field_name:
             for option in field.get("options", []):
                 if option.get("name") == "QA Testing":
                     return option["id"]
+    logging.error(f"'QA Testing' option not found under field '{status_field_name}'.")
     return None
 
 
 # ----------------------------------------------------------------------------------------
-# Check issue state (handles reopened issues properly)
+# Fetch Project Items 
 # ----------------------------------------------------------------------------------------
-def get_issue_state(owner, repo, issue_number):
+def get_project_items(owner, owner_type, project_number, status_field_name):
     """
-    Check if an issue is actually open or closed.
-    Uses 'closed' boolean as the source of truth,
-    falls back to 'state' for robustness.
+    Fetch all items from the project board to map issues to their ProjectV2 item IDs.
     """
     query = """
-    query($owner: String!, $repo: String!, $number: Int!) {
-      repository(owner: $owner, name: $repo) {
-        issue(number: $number) {
-          closed
-          state
-          closedAt
+    query($owner: String!, $projectNumber: Int!, $afterCursor: String) {
+      organization(login: $owner) {
+        projectV2(number: $projectNumber) {
+          items(first: 100, after: $afterCursor) {
+            nodes {
+              id
+              content {
+                ... on Issue {
+                  id
+                  number
+                  title
+                  url
+                }
+              }
+            }
+            pageInfo {
+              hasNextPage
+              endCursor
+            }
+          }
         }
       }
     }
     """
-    variables = {"owner": owner, "repo": repo, "number": issue_number}
-    response = requests.post(
-        config.api_endpoint,
-        json={"query": query, "variables": variables},
-        headers={"Authorization": f"Bearer {config.gh_token}"},
-    )
+    variables = {"owner": owner, "projectNumber": project_number, "afterCursor": None}
+    items = []
+
     try:
-        issue_data = (
-            response.json()
-            .get("data", {})
-            .get("repository", {})
-            .get("issue", {})
-        )
-        if not issue_data:
-            return None
+        while True:
+            response = requests.post(
+                config.api_endpoint,
+                json={"query": query, "variables": variables},
+                headers={"Authorization": f"Bearer {config.gh_token}"},
+            )
+            data = response.json()
 
-        closed = issue_data.get("closed")
-        state = issue_data.get("state")
-        closed_at = issue_data.get("closedAt")
+            if "errors" in data:
+                logging.error(f"GraphQL query errors: {data['errors']}")
+                break
 
-        logging.debug(f"Issue #{issue_number}: closed={closed}, state={state}, closedAt={closed_at}")
+            nodes = (
+                data.get("data", {})
+                .get("organization", {})
+                .get("projectV2", {})
+                .get("items", {})
+                .get("nodes", [])
+            )
+            items.extend(nodes)
 
-        if closed is True or state == "CLOSED":
-            return "CLOSED"
-        return "OPEN"
-    except Exception as e:
-        logging.error(f"Error checking issue state: {e}")
-        return None
+            page_info = (
+                data.get("data", {})
+                .get("organization", {})
+                .get("projectV2", {})
+                .get("items", {})
+                .get("pageInfo", {})
+            )
+
+            if not page_info.get("hasNextPage"):
+                break
+            variables["afterCursor"] = page_info.get("endCursor")
+
+        return items
+    except requests.RequestException as e:
+        logging.error(f"Request error while fetching project items: {e}")
+        return []
 
 
 # ----------------------------------------------------------------------------------------
-# Get/Update issue status + comments
+# Issue utilities
 # ----------------------------------------------------------------------------------------
 def get_issue_status(issue_id, status_field_name):
     query = """
@@ -279,14 +306,42 @@ def get_issue_status(issue_id, status_field_name):
         json={"query": query, "variables": variables},
         headers={"Authorization": f"Bearer {config.gh_token}"},
     )
+    data = response.json()
     try:
-        nodes = response.json()["data"]["node"]["projectItems"]["nodes"]
+        nodes = data["data"]["node"]["projectItems"]["nodes"]
         for item in nodes:
             field = item.get("fieldValueByName")
             if field:
                 return field.get("name")
         return None
     except Exception:
+        return None
+
+
+# ✅ NEW FUNCTION — Check if issue is OPEN or CLOSED
+def get_issue_state(issue_id):
+    """
+    Returns the current state of the issue: OPEN or CLOSED.
+    """
+    query = """
+    query($issueId: ID!) {
+      node(id: $issueId) {
+        ... on Issue {
+          state
+        }
+      }
+    }
+    """
+    try:
+        response = requests.post(
+            config.api_endpoint,
+            json={"query": query, "variables": {"issueId": issue_id}},
+            headers={"Authorization": f"Bearer {config.gh_token}"},
+        )
+        data = response.json()
+        return data.get("data", {}).get("node", {}).get("state", None)
+    except Exception as e:
+        logging.error(f"Error fetching issue state for {issue_id}: {e}")
         return None
 
 
@@ -323,8 +378,14 @@ def get_issue_comments(issue_id):
       node(id: $issueId) {
         ... on Issue {
           comments(first: 100, after: $afterCursor) {
-            nodes { body createdAt }
-            pageInfo { endCursor hasNextPage }
+            nodes {
+              body
+              createdAt
+            }
+            pageInfo {
+              endCursor
+              hasNextPage
+            }
           }
         }
       }
@@ -345,7 +406,6 @@ def get_issue_comments(issue_id):
         if not page.get("hasNextPage"):
             break
         variables["afterCursor"] = page.get("endCursor")
-        time.sleep(0.2)
     return comments
 
 
@@ -353,7 +413,9 @@ def add_issue_comment(issue_id, body: str):
     mutation = """
     mutation AddComment($subjectId: ID!, $body: String!) {
       addComment(input: {subjectId: $subjectId, body: $body}) {
-        commentEdge { node { id body } }
+        commentEdge {
+          node { id body }
+        }
       }
     }
     """
