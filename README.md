@@ -6,9 +6,9 @@ GitHub does not provide a built-in mechanism to update project statuses upon PR 
 
 Automatically updating the central GitHub Project status to "QA Testing" when a PR is merged into dev.
 
-Ensuring that duplicate updates and comments are avoided for cleaner workflows.
+Ensuring that duplicate updates and comments are avoided for cleaner workflows, and it checks if the related issue in the PR body is Open or Close.
 
-Adding a comment the same time as changing the status.
+Adding a comment the same time as changing the status, only if the issue is open.
 
 # How It Works
 
@@ -16,7 +16,7 @@ Adding a comment the same time as changing the status.
 
 - Identifies linked issues in the project.
 
-If an issue is not in QA Testing, the workflow:
+If an issue is OPEN and not in QA Testing, the workflow:
 
 - Updates its status → QA Testing.
 
@@ -40,7 +40,7 @@ Before you can start using this GitHub Action, you'll need to ensure you have th
 2. A GitHub project board (name: Requests Product Backlog) with a custom status field added.
 3. A "QA Testing" status option added in the Status field.
 4. A Token (Classic) with permissions to repo:*, write: org, read: org, read:user, user:email, project.
-5. Yaml workflow running in your repository: emily-lambrou/status_changes_to_qatesting
+5. Yaml workflow running in the repository where you want to fetch all the merged pull requests.
 
 ### Inputs
 
