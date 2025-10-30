@@ -89,12 +89,23 @@ def notify_change_status():
             issue_id = issue_data["id"]
             issue_number = issue_data["number"]
 
-            # ✅ Check if issue is closed before proceeding
-            issue_state = graphql.get_issue_state(issue_id)
-            if issue_state and issue_state.upper() != "OPEN":
-                logger.info(f"⏭️ Skipping issue #{issue_number} — issue is {issue_state}.")
+            # check the issue state (OPEN or CLOSED)
+            issue_state = graphql.get_issue_state(
+                issue_id,
+                org=config.repository_owner,
+                repo=config.repository_name,
+                issue_number=issue_number
+            )
+
+            if not issue_state:
+                logger.error("Error checking issue state")
                 continue
 
+            if issue_state.upper() != "OPEN":
+                logger.info(f"Skipping issue #{issue_number} — it is CLOSED.")
+                continue
+
+            # Comment text
             comment_text = (
                 f"Testing will be available in 15 minutes "
                 f"(triggered by [PR #{pr_number}]({pr_url}))"
@@ -140,7 +151,7 @@ def notify_change_status():
 
 
 def main():
-    logger.info("🔄 Process started...")
+    logger.info("🔄 QA Testing workflow started...")
     if config.dry_run:
         logger.info("DRY RUN MODE ON!")
 
