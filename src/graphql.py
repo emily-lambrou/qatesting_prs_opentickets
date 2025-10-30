@@ -75,7 +75,7 @@ def extract_referenced_issues_from_text(text):
 # Resolve issue reference (handles cross-repo issues too)
 # ----------------------------------------------------------------------------------------
 def resolve_issue_reference(reference):
-    """Return issue ID, number, and URL for a given reference."""
+    """Return issue ID, number, URL, org, and repo for a given reference."""
     match = re.match(r"(?:(?P<org>[\w\-]+)/(?P<repo>[\w\-]+))?#(?P<number>\d+)", reference)
     if not match:
         return None
@@ -104,18 +104,22 @@ def resolve_issue_reference(reference):
     )
     data = response.json()
     issue = data.get("data", {}).get("repository", {}).get("issue")
+
+    if issue:
+        issue["org"] = org
+        issue["repo"] = repo
     return issue
 
 
 # ----------------------------------------------------------------------------------------
 # Get issue state (OPEN or CLOSED)
 # ----------------------------------------------------------------------------------------
-def get_issue_state(issue_id, org=None, repo=None, issue_number=None):
+def get_issue_state(issue_id, org, repo, issue_number):
     """
     Returns the current state of the issue: OPEN or CLOSED.
-    Uses fallback query if node(id:) fails.
+    Works reliably across cross-repo contexts.
     """
-    # --- Primary query by node(id) ---
+    # --- Try node query ---
     query_node = """
     query($issueId: ID!) {
       node(id: $issueId) {
@@ -138,250 +142,30 @@ def get_issue_state(issue_id, org=None, repo=None, issue_number=None):
         if issue_node and issue_node.get("__typename") == "Issue" and issue_node.get("state"):
             return issue_node["state"]
 
-        # --- Fallback query using repo/owner if available ---
-        if org and repo and issue_number:
-            fallback_query = """
-            query($owner: String!, $repo: String!, $number: Int!) {
-              repository(owner: $owner, name: $repo) {
-                issue(number: $number) {
-                  state
-                }
-              }
+        # --- Fallback query using the resolved org/repo directly ---
+        fallback_query = """
+        query($owner: String!, $repo: String!, $number: Int!) {
+          repository(owner: $owner, name: $repo) {
+            issue(number: $number) {
+              state
             }
-            """
-            variables = {"owner": org, "repo": repo, "number": issue_number}
-            fallback_resp = requests.post(
-                config.api_endpoint,
-                json={"query": fallback_query, "variables": variables},
-                headers={"Authorization": f"Bearer {config.gh_token}"},
-            )
-            fb_data = fallback_resp.json()
-            issue_data = fb_data.get("data", {}).get("repository", {}).get("issue", {})
-            if issue_data and issue_data.get("state"):
-                return issue_data["state"]
+          }
+        }
+        """
+        variables = {"owner": org, "repo": repo, "number": issue_number}
+        fallback_resp = requests.post(
+            config.api_endpoint,
+            json={"query": fallback_query, "variables": variables},
+            headers={"Authorization": f"Bearer {config.gh_token}"},
+        )
+        fb_data = fallback_resp.json()
+        issue_data = fb_data.get("data", {}).get("repository", {}).get("issue", {})
+        if issue_data and issue_data.get("state"):
+            return issue_data["state"]
 
-        logging.error(f"Issue state not found for ID {issue_id}. Response: {data}")
+        logging.error(f"Issue state not found for {org}/{repo}#{issue_number}")
         return None
 
     except Exception as e:
-        logging.error(f"Error fetching issue state for {issue_id}: {e}")
+        logging.error(f"Error fetching issue state for {org}/{repo}#{issue_number}: {e}")
         return None
-
-
-# ----------------------------------------------------------------------------------------
-# Project and status helpers (unchanged)
-# ----------------------------------------------------------------------------------------
-def get_project_id_by_title(owner, project_title):
-    query = """
-    query($owner: String!, $projectTitle: String!) {
-      organization(login: $owner) {
-        projectsV2(first: 10, query: $projectTitle) {
-          nodes { id title }
-        }
-      }
-    }
-    """
-    variables = {"owner": owner, "projectTitle": project_title}
-    response = requests.post(
-        config.api_endpoint,
-        json={"query": query, "variables": variables},
-        headers={"Authorization": f"Bearer {config.gh_token}"},
-    )
-    data = response.json()
-    projects = data.get("data", {}).get("organization", {}).get("projectsV2", {}).get("nodes", [])
-    for project in projects:
-        if project["title"] == project_title:
-            return project["id"]
-    return None
-
-
-def get_status_field_id(project_id, status_field_name):
-    query = """
-    query($projectId: ID!) {
-      node(id: $projectId) {
-        ... on ProjectV2 {
-          fields(first: 100) {
-            nodes {
-              __typename
-              ... on ProjectV2SingleSelectField {
-                id
-                name
-              }
-            }
-          }
-        }
-      }
-    }
-    """
-    response = requests.post(
-        config.api_endpoint,
-        json={"query": query, "variables": {"projectId": project_id}},
-        headers={"Authorization": f"Bearer {config.gh_token}"},
-    )
-    data = response.json()
-    fields = data.get("data", {}).get("node", {}).get("fields", {}).get("nodes", [])
-    for field in fields:
-        if field.get("__typename") == "ProjectV2SingleSelectField" and field.get("name") == status_field_name:
-            return field["id"]
-    logging.error(f"Status field '{status_field_name}' not found among project fields.")
-    return None
-
-
-def get_qatesting_status_option_id(project_id, status_field_name):
-    query = """
-    query($projectId: ID!) {
-      node(id: $projectId) {
-        ... on ProjectV2 {
-          fields(first: 100) {
-            nodes {
-              __typename
-              ... on ProjectV2SingleSelectField {
-                id
-                name
-                options {
-                  id
-                  name
-                }
-              }
-            }
-          }
-        }
-      }
-    }
-    """
-    response = requests.post(
-        config.api_endpoint,
-        json={"query": query, "variables": {"projectId": project_id}},
-        headers={"Authorization": f"Bearer {config.gh_token}"},
-    )
-    data = response.json()
-    fields = data.get("data", {}).get("node", {}).get("fields", {}).get("nodes", [])
-    for field in fields:
-        if field.get("__typename") == "ProjectV2SingleSelectField" and field.get("name") == status_field_name:
-            for option in field.get("options", []):
-                if option.get("name") == "QA Testing":
-                    return option["id"]
-    logging.error(f"'QA Testing' option not found under field '{status_field_name}'.")
-    return None
-
-
-# ----------------------------------------------------------------------------------------
-# Other utilities (unchanged)
-# ----------------------------------------------------------------------------------------
-def get_issue_status(issue_id, status_field_name):
-    query = """
-    query($issueId: ID!, $statusField: String!) {
-      node(id: $issueId) {
-        ... on Issue {
-          projectItems(first: 10) {
-            nodes {
-              fieldValueByName(name: $statusField) {
-                ... on ProjectV2ItemFieldSingleSelectValue {
-                  name
-                }
-              }
-            }
-          }
-        }
-      }
-    }
-    """
-    variables = {"issueId": issue_id, "statusField": status_field_name}
-    response = requests.post(
-        config.api_endpoint,
-        json={"query": query, "variables": variables},
-        headers={"Authorization": f"Bearer {config.gh_token}"},
-    )
-    data = response.json()
-    try:
-        nodes = data["data"]["node"]["projectItems"]["nodes"]
-        for item in nodes:
-            field = item.get("fieldValueByName")
-            if field:
-                return field.get("name")
-        return None
-    except Exception:
-        return None
-
-
-def update_issue_status_to_qa_testing(owner, project_title, project_id, status_field_id, item_id, status_option_id):
-    mutation = """
-    mutation UpdateIssueStatus($projectId: ID!, $itemId: ID!, $statusFieldId: ID!, $statusOptionId: String!) {
-      updateProjectV2ItemFieldValue(input: {
-        projectId: $projectId,
-        itemId: $itemId,
-        fieldId: $statusFieldId,
-        value: { singleSelectOptionId: $statusOptionId }
-      }) {
-        projectV2Item { id }
-      }
-    }
-    """
-    variables = {
-        "projectId": project_id,
-        "itemId": item_id,
-        "statusFieldId": status_field_id,
-        "statusOptionId": status_option_id,
-    }
-    response = requests.post(
-        config.api_endpoint,
-        json={"query": mutation, "variables": variables},
-        headers={"Authorization": f"Bearer {config.gh_token}"},
-    )
-    return response.json().get("data")
-
-
-def get_issue_comments(issue_id):
-    query = """
-    query GetIssueComments($issueId: ID!, $afterCursor: String) {
-      node(id: $issueId) {
-        ... on Issue {
-          comments(first: 100, after: $afterCursor) {
-            nodes {
-              body
-              createdAt
-            }
-            pageInfo {
-              endCursor
-              hasNextPage
-            }
-          }
-        }
-      }
-    }
-    """
-    variables = {"issueId": issue_id, "afterCursor": None}
-    comments = []
-    while True:
-        response = requests.post(
-            config.api_endpoint,
-            json={"query": query, "variables": variables},
-            headers={"Authorization": f"Bearer {config.gh_token}"},
-        )
-        data = response.json()
-        nodes = data.get("data", {}).get("node", {}).get("comments", {}).get("nodes", [])
-        comments.extend(nodes)
-        page = data.get("data", {}).get("node", {}).get("comments", {}).get("pageInfo", {})
-        if not page.get("hasNextPage"):
-            break
-        variables["afterCursor"] = page.get("endCursor")
-    return comments
-
-
-def add_issue_comment(issue_id, body: str):
-    mutation = """
-    mutation AddComment($subjectId: ID!, $body: String!) {
-      addComment(input: {subjectId: $subjectId, body: $body}) {
-        commentEdge {
-          node { id body }
-        }
-      }
-    }
-    """
-    variables = {"subjectId": issue_id, "body": body}
-    response = requests.post(
-        config.api_endpoint,
-        json={"query": mutation, "variables": variables},
-        headers={"Authorization": f"Bearer {config.gh_token}"},
-    )
-    return response.json().get("data")
