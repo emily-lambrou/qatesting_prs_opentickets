@@ -318,7 +318,7 @@ def get_issue_status(issue_id, status_field_name):
         return None
 
 
-# ✅ NEW FUNCTION — Check if issue is OPEN or CLOSED
+# Check if issue is OPEN or CLOSED (correct GraphQL schema)
 def get_issue_state(issue_id):
     """
     Returns the current state of the issue: OPEN or CLOSED.
@@ -326,6 +326,7 @@ def get_issue_state(issue_id):
     query = """
     query($issueId: ID!) {
       node(id: $issueId) {
+        __typename
         ... on Issue {
           state
         }
@@ -339,7 +340,18 @@ def get_issue_state(issue_id):
             headers={"Authorization": f"Bearer {config.gh_token}"},
         )
         data = response.json()
-        return data.get("data", {}).get("node", {}).get("state", None)
+
+        if "errors" in data:
+            logging.error(f"GraphQL errors while checking issue state: {data['errors']}")
+            return None
+
+        issue_node = data.get("data", {}).get("node", {})
+        if issue_node and issue_node.get("__typename") == "Issue":
+            return issue_node.get("state", None)
+
+        logging.error(f"Issue node not found or invalid for ID {issue_id}: {issue_node}")
+        return None
+
     except Exception as e:
         logging.error(f"Error fetching issue state for {issue_id}: {e}")
         return None
