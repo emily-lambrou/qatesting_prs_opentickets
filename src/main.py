@@ -25,6 +25,9 @@ def notify_change_status():
         logger.info("No merged PRs found in dev.")
         return
 
+    # ----------------------------------------------------------------------------------------
+    # Get the project_id, status_field_id, and QA Testing option ID
+    # ----------------------------------------------------------------------------------------
     project_title = config.project_title
     project_id = graphql.get_project_id_by_title(
         owner=config.repository_owner,
@@ -35,12 +38,20 @@ def notify_change_status():
         logging.error(f"Project {project_title} not found.")
         return None
 
-    status_field_id = graphql.get_status_field_id(project_id, config.status_field_name)
+    status_field_id = graphql.get_status_field_id(
+        project_id=project_id,
+        status_field_name=config.status_field_name
+    )
+
     if not status_field_id:
         logging.error(f"Status field not found in project {project_title}")
         return None
 
-    status_option_id = graphql.get_qatesting_status_option_id(project_id, config.status_field_name)
+    status_option_id = graphql.get_qatesting_status_option_id(
+        project_id=project_id,
+        status_field_name=config.status_field_name
+    )
+
     if not status_option_id:
         logging.error(f"'QA Testing' option not found in project {project_title}")
         return None
@@ -52,13 +63,15 @@ def notify_change_status():
         status_field_name=config.status_field_name
     )
 
-    # -------------------------- MAIN LOOP --------------------------
+    # ----------------------------------------------------------------------------------------
+    # Iterate over merged PRs and update linked issues
+    # ----------------------------------------------------------------------------------------
     for pr in merged_prs:
         pr_number = pr["number"]
         pr_url = pr["url"]
         pr_title = pr["title"]
 
-        logger.info(f"Checking PR #{pr_number} ({pr_title}) for referenced issues in description...")
+        logger.info(f"Checking PR #{pr_number} ({pr_title}) for mentioned issues in description...")
 
         linked_issues = graphql.extract_referenced_issues_from_text(pr.get("bodyText", ""))
         if not linked_issues:
@@ -75,18 +88,11 @@ def notify_change_status():
 
             issue_id = issue_data["id"]
             issue_number = issue_data["number"]
-            org = issue_data.get("org")
-            repo = issue_data.get("repo")
+            issue_state = issue_data.get("state", "UNKNOWN")
 
-            # ✅ Check issue state using correct repo context
-            issue_state = graphql.get_issue_state(issue_id, org, repo, issue_number)
-
-            if not issue_state:
-                logger.error("Error checking issue state")
-                continue
-
-            if issue_state.upper() != "OPEN":
-                logger.info(f"Skipping issue #{issue_number} — it is CLOSED.")
+            # ✅ Skip closed issues
+            if issue_state != "OPEN":
+                logger.info(f"Skipping issue #{issue_number} — it is {issue_state}.")
                 continue
 
             comment_text = (
@@ -94,6 +100,7 @@ def notify_change_status():
                 f"(triggered by [PR #{pr_number}]({pr_url}))"
             )
 
+            # Skip duplicate comments
             if check_comment_exists(issue_id, comment_text):
                 logger.info(f"Skipping issue #{issue_number} — comment already exists for PR #{pr_number}.")
                 continue
@@ -133,7 +140,7 @@ def notify_change_status():
 
 
 def main():
-    logger.info("🔄 QA Testing workflow started...")
+    logger.info("🔄 Process started...")
     if config.dry_run:
         logger.info("DRY RUN MODE ON!")
 
